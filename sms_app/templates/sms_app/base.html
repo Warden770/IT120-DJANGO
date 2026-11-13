@@ -1,0 +1,44 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SMS Sender{% endblock %} | IT 120</title>
+  <link rel="stylesheet" href="{% static 'sms_app/style.css' %}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="{% url 'sms_app:send' %}">SMS Sender</a>
+      <nav>
+        <a href="{% url 'sms_app:send' %}" {% if request.resolver_match.url_name == 'send' %}class="active"{% endif %}>Send SMS</a>
+        <a href="{% url 'sms_app:history' %}" {% if request.resolver_match.url_name == 'history' %}class="active"{% endif %}>History</a>
+        <a href="{% url 'sms_app:contacts' %}" {% if request.resolver_match.url_name == 'contacts' %}class="active"{% endif %}>Contacts</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    {% if simulated %}
+      <div class="alert alert-warning" role="status">
+        <strong>Simulation mode.</strong> <code>SMS_BACKEND=console</code> is active, so no real SMS will be sent.
+      </div>
+    {% endif %}
+
+    {% if messages %}
+      <div class="messages">
+        {% for message in messages %}
+          <div class="alert alert-{{ message.level_tag|default:'info' }}" role="alert">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="container site-footer">
+    IT 120 &ndash; Integrative Programming and Technologies &middot; Django SMS group project
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

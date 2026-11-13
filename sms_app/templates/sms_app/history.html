@@ -1,0 +1,63 @@
+{% extends "sms_app/base.html" %}
+{% block title %}History{% endblock %}
+
+{% block content %}
+<h1>Sending history</h1>
+
+<div class="stats">
+  <div class="stat"><span class="stat-number">{{ stats.total }}</span><span class="stat-label">Attempts</span></div>
+  <div class="stat"><span class="stat-number">{{ stats.pending }}</span><span class="stat-label">Awaiting delivery</span></div>
+  <div class="stat"><span class="stat-number">{{ stats.delivered }}</span><span class="stat-label">Delivered</span></div>
+  <div class="stat"><span class="stat-number">{{ stats.failed }}</span><span class="stat-label">Failed</span></div>
+</div>
+
+<div class="toolbar">
+  <p class="hint">&ldquo;Queued&rdquo; and &ldquo;Sent&rdquo; mean the provider accepted the message &mdash;
+    only &ldquo;Delivered&rdquo; is a confirmed delivery.</p>
+  <form method="post" action="{% url 'sms_app:refresh_pending' %}">
+    {% csrf_token %}
+    <button type="submit" class="btn">Refresh all pending</button>
+  </form>
+</div>
+
+{% if page.object_list %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>When</th><th>To</th><th>Message</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for sms in page.object_list %}
+      <tr>
+        <td class="nowrap">{{ sms.created_at|date:"M d, Y H:i" }}</td>
+        <td class="nowrap">{{ sms.recipient }}</td>
+        <td class="msg">{{ sms.body|truncatechars:80 }}</td>
+        <td>
+          <span class="badge badge-{{ sms.status }}" title="{{ sms.status_help }}">{{ sms.get_status_display }}</span>
+          {% if sms.error_message %}<p class="error small">{{ sms.error_message }}</p>{% endif %}
+        </td>
+        <td>
+          {% if sms.can_refresh %}
+          <form method="post" action="{% url 'sms_app:refresh_status' sms.pk %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-small">Refresh status</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if page.has_other_pages %}
+<nav class="pager">
+  {% if page.has_previous %}<a href="?page={{ page.previous_page_number }}">&larr; Newer</a>{% endif %}
+  <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}<a href="?page={{ page.next_page_number }}">Older &rarr;</a>{% endif %}
+</nav>
+{% endif %}
+{% else %}
+<p class="empty">No messages yet. <a href="{% url 'sms_app:send' %}">Send your first SMS</a>.</p>
+{% endif %}
+{% endblock %}

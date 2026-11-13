@@ -1,0 +1,57 @@
+{% extends "sms_app/base.html" %}
+{% load static %}
+{% block title %}Send SMS{% endblock %}
+
+{% block content %}
+<h1>Send an SMS</h1>
+<p class="lead">Enter a recipient and a message. Use only numbers you are authorized to text
+  (with a Twilio trial account, only numbers verified in your Twilio Console).</p>
+
+<div class="grid-2">
+  <section class="card">
+    <form method="post" novalidate id="sms-form" data-max-length="{{ max_length }}">
+      {% csrf_token %}
+
+      {% if contacts %}
+      <div class="field">
+        <label for="contact-picker">Pick a saved contact (optional)</label>
+        <select id="contact-picker">
+          <option value="">&mdash; choose a contact &mdash;</option>
+          {% for contact in contacts %}
+            <option value="{{ contact.phone_number }}">{{ contact.name }} ({{ contact.phone_number }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+
+      <div class="field {% if form.phone_number.errors %}has-error{% endif %}">
+        <label for="{{ form.phone_number.id_for_label }}">{{ form.phone_number.label }}</label>
+        {{ form.phone_number }}
+        {% for error in form.phone_number.errors %}<p class="error">{{ error }}</p>{% endfor %}
+        <p class="hint">Local numbers like 09171234567 are converted to +639171234567.</p>
+      </div>
+
+      <div class="field {% if form.message.errors %}has-error{% endif %}">
+        <label for="{{ form.message.id_for_label }}">{{ form.message.label }}</label>
+        {{ form.message }}
+        {% for error in form.message.errors %}<p class="error">{{ error }}</p>{% endfor %}
+        <p class="counter" id="counter" aria-live="polite">0 / {{ max_length }} characters</p>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Send SMS</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Message preview</h2>
+    <p class="hint">How the text will look on the recipient&rsquo;s phone.</p>
+    <div class="phone">
+      <p class="phone-to">To: <span id="preview-to">&mdash;</span></p>
+      <div class="bubble" id="preview-body">Your message will appear here.</div>
+    </div>
+    <p class="hint" id="segments"></p>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="{% static 'sms_app/send.js' %}"></script>{% endblock %}
