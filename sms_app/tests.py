@@ -4,6 +4,7 @@ Run with:  python manage.py test
 """
 from unittest import mock
 
+import requests
 from django.core.exceptions import ValidationError
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -16,8 +17,8 @@ from .services import (
     SMSProviderError,
     SMSResult,
     SimulatedBackend,
-    TwilioBackend,
-    map_twilio_status,
+    TextBeeBackend,
+    map_textbee_status,
 )
 from .validators import normalize_phone_number, validate_message_body
 
@@ -279,123 +280,166 @@ class ContactViewTests(TestCase):
         self.assertContains(response, "Ana (+639171234567)")
 
 
-# --- Provider integration (Twilio SDK mocked) ------------------------------------
+# --- Provider integration (HTTP calls mocked) --------------------------------------
 
-TWILIO_SETTINGS = dict(
-    SMS_BACKEND="twilio",
-    TWILIO_ACCOUNT_SID="ACtest",
-    TWILIO_AUTH_TOKEN="super-secret-token",
-    TWILIO_PHONE_NUMBER="+15005550006",
-    TWILIO_MESSAGING_SERVICE_SID="",
+TEXTBEE_SETTINGS = dict(
+    SMS_BACKEND="textbee",
+    TEXTBEE_API_KEY="super-secret-key",
+    TEXTBEE_DEVICE_ID="",
+    TEXTBEE_BASE_URL="https://api.textbee.dev/api/v1",
 )
 
 
-class TwilioBackendTests(SimpleTestCase):
-    @override_settings(**{**TWILIO_SETTINGS, "TWILIO_ACCOUNT_SID": "", "TWILIO_AUTH_TOKEN": ""})
-    def test_missing_credentials_raise_configuration_error(self):
-        with self.assertRaises(SMSConfigurationError) as ctx:
-            TwilioBackend().send("+639171234567", "hi")
-        self.assertIn("TWILIO_ACCOUNT_SID", ctx.exception.user_message)
+def fake_response(status_code=200, body=None, json_error=False):
+    response = mock.Mock()
+    response.status_code = status_code
+    if json_error:
+        response.json.side_effect = ValueError("not json")
+    else:
+        response.json.return_value = body if body is not None else {}
+    return response
 
-    @override_settings(**{**TWILIO_SETTINGS, "TWILIO_PHONE_NUMBER": ""})
-    def test_missing_sender_raises_configuration_error(self):
-        with self.assertRaises(SMSConfigurationError):
-            TwilioBackend().send("+639171234567", "hi")
 
-    @override_settings(**TWILIO_SETTINGS)
-    def test_successful_send_returns_sid_and_status(self):
-        fake_client = mock.MagicMock()
-        fake_client.messages.create.return_value = mock.Mock(sid="SMabc", status="queued")
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
-            result = TwilioBackend().send("+639171234567", "hi")
-        self.assertEqual(result, SMSResult(sid="SMabc", status="queued"))
-        fake_client.messages.create.assert_called_once_with(to="+639171234567", body="hi", from_="+15005550006")
+def patch_http(**kwargs):
+    return mock.patch("sms_app.services.requests.request", **kwargs)
 
-    @override_settings(**{**TWILIO_SETTINGS, "TWILIO_MESSAGING_SERVICE_SID": "MG123"})
-    def test_messaging_service_is_preferred_over_phone_number(self):
-        fake_client = mock.MagicMock()
-        fake_client.messages.create.return_value = mock.Mock(sid="SMabc", status="queued")
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
-            TwilioBackend().send("+639171234567", "hi")
-        fake_client.messages.create.assert_called_once_with(
-            to="+639171234567", body="hi", messaging_service_sid="MG123"
-        )
 
-    @override_settings(**TWILIO_SETTINGS)
-    def test_wrong_credentials_do_not_leak_secrets(self):
-        from twilio.base.exceptions import TwilioRestException
-
-        fake_client = mock.MagicMock()
-        fake_client.messages.create.side_effect = TwilioRestException(401, "/Messages", "Authenticate", 20003)
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
+class TextBeeBackendTests(SimpleTestCase):
+    @override_settings(**{**TEXTBEE_SETTINGS, "TEXTBEE_API_KEY": ""})
+    def test_missing_api_key_raises_configuration_error(self):
+        with patch_http() as request:
             with self.assertRaises(SMSConfigurationError) as ctx:
-                TwilioBackend().send("+639171234567", "hi")
-        self.assertNotIn("super-secret-token", ctx.exception.user_message)
+                TextBeeBackend().send("+639171234567", "hi")
+        self.assertIn("TEXTBEE_API_KEY", ctx.exception.user_message)
+        request.assert_not_called()
 
-    @override_settings(**TWILIO_SETTINGS)
-    def test_unverified_trial_number_gets_a_helpful_message(self):
-        from twilio.base.exceptions import TwilioRestException
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_successful_send_returns_batch_id_and_queued_status(self):
+        body = {"data": {"success": True, "message": "SMS added to queue", "smsBatchId": "batch123", "recipientCount": 1}}
+        with patch_http(return_value=fake_response(200, body)) as request:
+            result = TextBeeBackend().send("+639171234567", "hi")
+        self.assertEqual(result, SMSResult(sid="batch123", status="queued"))
+        args, kwargs = request.call_args
+        self.assertEqual(args, ("POST", "https://api.textbee.dev/api/v1/gateway/send-sms"))
+        self.assertEqual(kwargs["json"], {"recipients": ["+639171234567"], "message": "hi"})
+        self.assertEqual(kwargs["headers"]["x-api-key"], "super-secret-key")
 
-        fake_client = mock.MagicMock()
-        fake_client.messages.create.side_effect = TwilioRestException(400, "/Messages", "unverified", 21608)
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
+    @override_settings(**{**TEXTBEE_SETTINGS, "TEXTBEE_DEVICE_ID": "dev42"})
+    def test_device_id_is_sent_when_configured(self):
+        body = {"data": {"success": True, "smsBatchId": "b1"}}
+        with patch_http(return_value=fake_response(200, body)) as request:
+            TextBeeBackend().send("+639171234567", "hi")
+        self.assertEqual(request.call_args.kwargs["json"]["deviceId"], "dev42")
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_send_never_reports_more_than_queued(self):
+        body = {"data": {"success": True, "smsBatchId": "b1"}}
+        with patch_http(return_value=fake_response(200, body)):
+            self.assertEqual(TextBeeBackend().send("+639171234567", "hi").status, "queued")
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_unsuccessful_payload_raises_provider_error(self):
+        body = {"data": {"success": False, "message": "quota"}}
+        with patch_http(return_value=fake_response(200, body)):
+            with self.assertRaises(SMSProviderError):
+                TextBeeBackend().send("+639171234567", "hi")
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_wrong_api_key_does_not_leak_secrets(self):
+        with patch_http(return_value=fake_response(401, {"error": "Unauthorized", "code": "AUTH_INVALID"})):
+            with self.assertRaises(SMSConfigurationError) as ctx:
+                TextBeeBackend().send("+639171234567", "hi")
+        self.assertNotIn("super-secret-key", ctx.exception.user_message)
+        self.assertIn("TEXTBEE_API_KEY", ctx.exception.user_message)
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_no_enabled_device_gets_a_helpful_message(self):
+        body = {"error": "No enabled device found. Enable a device or pass a deviceId."}
+        with patch_http(return_value=fake_response(400, body)):
             with self.assertRaises(SMSProviderError) as ctx:
-                TwilioBackend().send("+639171234567", "hi")
-        self.assertIn("verified", ctx.exception.user_message)
+                TextBeeBackend().send("+639171234567", "hi")
+        self.assertIn("TextBee app", ctx.exception.user_message)
 
-    @override_settings(**TWILIO_SETTINGS)
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_other_bad_request_includes_the_provider_reason(self):
+        with patch_http(return_value=fake_response(400, {"message": ["recipient is invalid"]})):
+            with self.assertRaises(SMSProviderError) as ctx:
+                TextBeeBackend().send("+639171234567", "hi")
+        self.assertIn("recipient is invalid", ctx.exception.user_message)
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_unknown_device_is_a_configuration_error(self):
+        with patch_http(return_value=fake_response(404, {"message": "Device not found"})):
+            with self.assertRaises(SMSConfigurationError) as ctx:
+                TextBeeBackend().send("+639171234567", "hi")
+        self.assertIn("TEXTBEE_DEVICE_ID", ctx.exception.user_message)
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_plan_limit_is_reported(self):
+        with patch_http(return_value=fake_response(429, {"message": "Daily limit reached"})):
+            with self.assertRaises(SMSProviderError) as ctx:
+                TextBeeBackend().send("+639171234567", "hi")
+        self.assertIn("limit", ctx.exception.user_message.lower())
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_server_error_is_reported_without_internals(self):
+        with patch_http(return_value=fake_response(500, json_error=True)):
+            with self.assertRaises(SMSProviderError) as ctx:
+                TextBeeBackend().send("+639171234567", "hi")
+        self.assertIn("temporarily unavailable", ctx.exception.user_message)
+
+    @override_settings(**TEXTBEE_SETTINGS)
     def test_network_error_becomes_connection_error(self):
-        import requests
-
-        fake_client = mock.MagicMock()
-        fake_client.messages.create.side_effect = requests.exceptions.ConnectionError("down")
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
+        with patch_http(side_effect=requests.exceptions.ConnectionError("down")):
             with self.assertRaises(SMSConnectionError):
-                TwilioBackend().send("+639171234567", "hi")
+                TextBeeBackend().send("+639171234567", "hi")
 
-    @override_settings(**TWILIO_SETTINGS)
+    @override_settings(**TEXTBEE_SETTINGS)
     def test_timeout_becomes_connection_error(self):
-        import requests
-
-        fake_client = mock.MagicMock()
-        fake_client.messages.create.side_effect = requests.exceptions.Timeout("slow")
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
+        with patch_http(side_effect=requests.exceptions.Timeout("slow")):
             with self.assertRaises(SMSConnectionError) as ctx:
-                TwilioBackend().send("+639171234567", "hi")
+                TextBeeBackend().send("+639171234567", "hi")
         self.assertIn("too long", ctx.exception.user_message)
 
-    @override_settings(**TWILIO_SETTINGS)
-    def test_unexpected_error_is_wrapped(self):
-        fake_client = mock.MagicMock()
-        fake_client.messages.create.side_effect = RuntimeError("secret internals")
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
-            with self.assertRaises(SMSProviderError) as ctx:
-                TwilioBackend().send("+639171234567", "hi")
-        self.assertNotIn("secret internals", ctx.exception.user_message)
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_non_json_success_response_is_a_provider_error(self):
+        with patch_http(return_value=fake_response(200, json_error=True)):
+            with self.assertRaises(SMSProviderError):
+                TextBeeBackend().send("+639171234567", "hi")
 
-    @override_settings(**TWILIO_SETTINGS)
-    def test_fetch_status_maps_provider_status(self):
-        fake_client = mock.MagicMock()
-        fake_client.messages.return_value.fetch.return_value = mock.Mock(status="delivered")
-        with mock.patch("twilio.rest.Client", return_value=fake_client):
-            self.assertEqual(TwilioBackend().fetch_status("SMabc"), "delivered")
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_fetch_status_maps_the_first_message_status(self):
+        body = {"data": [{"_id": "m1", "status": "delivered"}], "meta": {"hasMore": False}}
+        with patch_http(return_value=fake_response(200, body)) as request:
+            self.assertEqual(TextBeeBackend().fetch_status("batch123"), "delivered")
+        args, kwargs = request.call_args
+        self.assertEqual(args[0], "GET")
+        self.assertEqual(kwargs["params"]["smsBatchId"], "batch123")
+
+    @override_settings(**TEXTBEE_SETTINGS)
+    def test_fetch_status_with_no_messages_stays_queued(self):
+        with patch_http(return_value=fake_response(200, {"data": [], "meta": {}})):
+            self.assertEqual(TextBeeBackend().fetch_status("batch123"), "queued")
 
 
 class StatusMappingTests(SimpleTestCase):
     def test_known_statuses(self):
-        self.assertEqual(map_twilio_status("accepted"), "queued")
-        self.assertEqual(map_twilio_status("delivered"), "delivered")
-        self.assertEqual(map_twilio_status("undelivered"), "undelivered")
+        self.assertEqual(map_textbee_status("pending"), "queued")
+        self.assertEqual(map_textbee_status("dispatched"), "sending")
+        self.assertEqual(map_textbee_status("sent"), "sent")
+        self.assertEqual(map_textbee_status("delivered"), "delivered")
+        self.assertEqual(map_textbee_status("failed"), "failed")
 
-    def test_unknown_status_never_claims_delivery(self):
-        self.assertEqual(map_twilio_status("something-new"), "sent")
-        self.assertEqual(map_twilio_status(None), "sent")
+    def test_unknown_or_missing_status_never_claims_sent_or_delivered(self):
+        self.assertEqual(map_textbee_status("unknown"), "sending")
+        self.assertEqual(map_textbee_status("something-new"), "queued")
+        self.assertEqual(map_textbee_status(None), "queued")
 
 
 class BackendFactoryTests(SimpleTestCase):
-    @override_settings(SMS_BACKEND="twilio")
-    def test_twilio_backend_selected(self):
-        self.assertIsInstance(services.get_backend(), TwilioBackend)
+    @override_settings(SMS_BACKEND="textbee")
+    def test_textbee_backend_selected(self):
+        self.assertIsInstance(services.get_backend(), TextBeeBackend)
 
     @override_settings(SMS_BACKEND="console")
     def test_console_backend_selected(self):

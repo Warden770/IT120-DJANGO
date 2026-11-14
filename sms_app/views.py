@@ -44,7 +44,7 @@ def send_sms(request):
                     messages.warning(
                         request,
                         f"SIMULATION: no real SMS was sent to {recipient}. "
-                        "Set SMS_BACKEND=twilio to send real messages.",
+                        "Set SMS_BACKEND=textbee to send real messages.",
                     )
                 else:
                     messages.success(

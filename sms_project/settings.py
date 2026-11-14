@@ -1,7 +1,7 @@
 """
 Django settings for the SMS sender project (IT 120 group assignment).
 
-All secrets (Django secret key, Twilio credentials) are read from environment
+All secrets (Django secret key, TextBee API key) are read from environment
 variables. For local development they may be placed in a ".env" file next to
 manage.py; that file is git-ignored. See ".env.example".
 """
@@ -120,18 +120,20 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- SMS configuration ----------------------------------------------------
 
-# "twilio" sends real messages; "console" only simulates (nothing leaves the app).
-SMS_BACKEND = os.environ.get("SMS_BACKEND", "twilio").strip().lower()
+# "textbee" sends real messages through the TextBee Android gateway;
+# "console" only simulates (nothing leaves the app).
+SMS_BACKEND = os.environ.get("SMS_BACKEND", "textbee").strip().lower()
 
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER", "").strip()
-TWILIO_MESSAGING_SERVICE_SID = os.environ.get("TWILIO_MESSAGING_SERVICE_SID", "").strip()
+# TextBee (https://textbee.dev): API key from the dashboard. The device ID is
+# optional - when empty, TextBee uses your default registered phone.
+TEXTBEE_API_KEY = os.environ.get("TEXTBEE_API_KEY", "").strip()
+TEXTBEE_DEVICE_ID = os.environ.get("TEXTBEE_DEVICE_ID", "").strip()
+TEXTBEE_BASE_URL = os.environ.get("TEXTBEE_BASE_URL", "https://api.textbee.dev/api/v1").strip()
 
 # Seconds to wait for the provider before reporting a connection problem.
 SMS_REQUEST_TIMEOUT = int(os.environ.get("SMS_REQUEST_TIMEOUT", "15"))
 
-# Twilio accepts up to 1600 characters per message.
+# Upper limit accepted by the form (long texts are split into several SMS segments).
 SMS_MAX_LENGTH = 1600
 
 # Used to turn local numbers (0917...) into international format (+63917...).
